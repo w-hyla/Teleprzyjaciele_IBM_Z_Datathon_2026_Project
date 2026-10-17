@@ -6,7 +6,6 @@ from src import create_pipeline
 app = FastAPI()
 
 class Transaction(BaseModel):
-    domain: str = None
     step: int = None
     type: str = None
     amount: float = 0.0
@@ -19,7 +18,7 @@ class Transaction(BaseModel):
 
 class APIInuput(BaseModel):
     transaction: Transaction
-    history_avg_amount:float = 350.0
+    domain: str = None
 
 pipeline = create_pipeline()
 
