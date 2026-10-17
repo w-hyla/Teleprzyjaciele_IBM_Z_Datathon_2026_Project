@@ -1,11 +1,8 @@
-"""Ręczne sprawdzanie dowolnych domen: werdykt fast_path + domain_risk z domain_analyzer.
-
-python -m tests.check_domain mbank.pl mbamk.pl https://evil.top/login
-python -m tests.check_domain < domeny.txt
-"""
-
 import argparse
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.domain_analyzer import analyze
 from src.fast_path import check
