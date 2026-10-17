@@ -1,6 +1,10 @@
+import contextlib
+import io
 import unittest
+from unittest import mock
 
 from src.domain_analyzer import analyze, levenshtein, shannon_entropy
+from tests.check_domain import evaluate, main
 
 
 class HelpersTest(unittest.TestCase):
@@ -84,6 +88,51 @@ class DomainAnalyzerTest(unittest.TestCase):
         self.assertFlags("mbank.pl", [], 0.0)
         result = analyze("paypa1.com", target_brands=["paypal.com"])
         self.assertEqual(result["reason_codes"], ["TYPOSQUATTING_LEVENSHTEIN"])
+
+
+class CheckDomainTest(unittest.TestCase):
+    # (domena lub URL, oczekiwane ryzyko, werdykt fast_path, reason_codes) – dopisz swoją domenę tutaj.
+    CASES = [
+        ("mbank.pl", 0.0, "ALLOW", []),
+        ("https://www.online.mbank.pl/login", 0.0, "ALLOW", []),
+        ("wikipedia.org", 0.05, "DEEP_CHECK", []),
+        ("mbamk.pl", 0.90, "DEEP_CHECK", ["TYPOSQUATTING_LEVENSHTEIN"]),
+        ("xn--mbnk-cta.pl", 0.95, "DEEP_CHECK", ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN"]),
+        ("xk7q9zpw3mfl2vbn.com", 0.75, "DEEP_CHECK", ["DGA_HIGH_ENTROPY"]),
+        ("http://allegro.pl.showitems.ca/oferta", 0.90, "BLOCK", ["TYPOSQUATTING_LEVENSHTEIN"]),
+    ]
+
+    def test_risk_table(self):
+        for domain, risk, verdict, reasons in self.CASES:
+            with self.subTest(domain=domain):
+                result = evaluate(domain)
+                self.assertAlmostEqual(result["domain_risk"], risk)
+                self.assertEqual(result["verdict"], verdict)
+                self.assertEqual(result["reason_codes"], reasons)
+
+    def test_unusual_amount(self):
+        result = evaluate("mbank.pl", amount=14500, avg=350)
+        self.assertEqual(result["verdict"], "DEEP_CHECK")
+        self.assertEqual(result["fast_path_reason"], "UNUSUAL_AMOUNT")
+        self.assertAlmostEqual(result["domain_risk"], 0.0)
+
+    def run_cli(self, argv, stdin=""):
+        out = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(stdin)), contextlib.redirect_stdout(out):
+            main(argv)
+        return out.getvalue().splitlines()
+
+    def test_cli_args(self):
+        lines = self.run_cli(["mbank.pl", "mbamk.pl"])
+        self.assertEqual(len(lines), 2)
+        self.assertIn("risk=0.00", lines[0])
+        self.assertIn("ALLOW", lines[0])
+        self.assertIn("risk=0.90", lines[1])
+
+    def test_cli_stdin_skips_blank_lines(self):
+        lines = self.run_cli([], stdin="mbank.pl\n\nwikipedia.org\n")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith("wikipedia.org"))
 
 
 if __name__ == "__main__":
