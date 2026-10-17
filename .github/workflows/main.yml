@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  build-and-containerize:
+  deploy:
     permissions: write-all
     runs-on: ubuntu-latest
     steps:
