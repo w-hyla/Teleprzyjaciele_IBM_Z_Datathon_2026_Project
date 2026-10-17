@@ -6,3 +6,4 @@ tensorflow
 onnx
 fastapi
 uvicorn
+pandas

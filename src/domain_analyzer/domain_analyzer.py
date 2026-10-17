@@ -317,7 +317,7 @@ def split_host(host: str) -> tuple[list[str], str, str]:
 def load_tranco(top_n: int) -> frozenset[str]:
     """Pierwsze top_n domen z rankingu Tranco (plik bez nagłówka: rank,domain; końce linii CRLF)."""
     domains = set()
-    with open(DATA_DIR / "tranco_top_1m.csv", encoding="utf-8") as f:
+    with open(DATA_DIR / "tranco_top.csv", encoding="utf-8") as f:
         for i, line in enumerate(f):
             if i >= top_n:
                 break
