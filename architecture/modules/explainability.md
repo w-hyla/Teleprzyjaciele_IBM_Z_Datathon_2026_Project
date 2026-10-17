@@ -10,7 +10,7 @@
     "aggregated_reasons": list[str], # List of reason codes from all upstream modules
     "context": {                     # Dynamic transaction metadata for message formatting
         "domain": str | None,        # Target website/domain (e.g., "mbank.pl.weryfikacja.top")
-        "amount": float | None,      # Transaction amount in PLN
+        "amount": float | None,      # Transaction amount
         "history_avg_amount": float | None, 
         "closest_brand": str | None  
     }
