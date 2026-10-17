@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from src.domain_analyzer import analyze, levenshtein, shannon_entropy
-from tests.check_domain import evaluate, main
+from tests.check_domain import evaluate, format_result, main
 
 
 class HelpersTest(unittest.TestCase):
@@ -91,8 +91,11 @@ class DomainAnalyzerTest(unittest.TestCase):
 
 
 class CheckDomainTest(unittest.TestCase):
-    # (domena lub URL, oczekiwane ryzyko, werdykt fast_path, reason_codes) – dopisz swoją domenę tutaj.
+    # Wpis: "domena" (tylko wypisze wynik) albo (domena lub URL, oczekiwane ryzyko, werdykt fast_path, reason_codes);
+    # pola z końca można pominąć. Dopisz swoją domenę tutaj.
     CASES = [
+        "mbank-weryfikacja.xyz",
+        ("pkobp.pl", 0.0),
         ("mbank.pl", 0.0, "ALLOW", []),
         ("https://www.online.mbank.pl/login", 0.0, "ALLOW", []),
         ("wikipedia.org", 0.05, "DEEP_CHECK", []),
@@ -103,12 +106,22 @@ class CheckDomainTest(unittest.TestCase):
     ]
 
     def test_risk_table(self):
-        for domain, risk, verdict, reasons in self.CASES:
+        for case in self.CASES:
+            case = (case,) if isinstance(case, str) else tuple(case)
+            domain, risk, verdict, reasons = (*case, None, None, None)[:4]
             with self.subTest(domain=domain):
                 result = evaluate(domain)
-                self.assertAlmostEqual(result["domain_risk"], risk)
-                self.assertEqual(result["verdict"], verdict)
-                self.assertEqual(result["reason_codes"], reasons)
+                self.assertGreaterEqual(result["domain_risk"], 0.0)
+                self.assertLessEqual(result["domain_risk"], 1.0)
+                self.assertIn(result["verdict"], {"ALLOW", "DEEP_CHECK", "BLOCK"})
+                if risk is not None:
+                    self.assertAlmostEqual(result["domain_risk"], risk)
+                if verdict is not None:
+                    self.assertEqual(result["verdict"], verdict)
+                if reasons is not None:
+                    self.assertEqual(result["reason_codes"], reasons)
+                if len(case) == 1:
+                    print(format_result(domain, 100.0, 100.0, details=False))
 
     def test_unusual_amount(self):
         result = evaluate("mbank.pl", amount=14500, avg=350)
