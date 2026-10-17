@@ -125,7 +125,7 @@ def _typo_candidates(sub_labels: list[str], sld: str) -> list[tuple[str, bool, b
     return candidates
 
 # --- równoległe skanowanie marek (typosquatting) ---
-MAX_WORKERS = 4
+MAX_WORKERS = 2
 PARALLEL_MIN_BRANDS = 2000   # poniżej tego jeden wątek jest szybszy
 
 _DEFAULT_INDEX = None        # (brand_slds, items) dla TRUSTED_DOMAINS
