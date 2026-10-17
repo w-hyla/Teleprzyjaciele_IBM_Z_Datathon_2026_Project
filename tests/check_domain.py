@@ -11,12 +11,23 @@ from src.domain_analyzer import analyze
 from src.fast_path import check
 
 
-def format_result(domain: str, amount: float, avg: float, details: bool) -> str:
+def evaluate(domain: str, amount: float = 100.0, avg: float = 100.0) -> dict:
     fp = check({"domain": domain, "amount": amount, "history_avg_amount": avg})
     result = analyze(domain)
+    return {
+        "domain_risk": result["domain_risk"],
+        "reason_codes": result["reason_codes"],
+        "verdict": fp["verdict"],
+        "fast_path_reason": fp["reason_code"],
+        "details": result["details"],
+    }
+
+
+def format_result(domain: str, amount: float, avg: float, details: bool) -> str:
+    result = evaluate(domain, amount, avg)
     line = (
         f"{domain:<32} risk={result['domain_risk']:.2f}  "
-        f"fast_path={fp['verdict'] + ' (' + fp['reason_code'] + ')':<32} "
+        f"fast_path={result['verdict'] + ' (' + result['fast_path_reason'] + ')':<32} "
         f"reasons=[{', '.join(result['reason_codes'])}]"
     )
     if details:
