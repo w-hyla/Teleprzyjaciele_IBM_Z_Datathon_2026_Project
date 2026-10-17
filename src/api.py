@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-from src import create_pipeline
+from __init__ import create_pipeline
 
 app = FastAPI()
 

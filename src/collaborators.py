@@ -7,7 +7,7 @@ measurement, and deterministic audit logging.
 import time
 import logging
 from typing import List
-from .contracts import DomainResult, TransactionResult
+from contracts import DomainResult, TransactionResult
 
 # Bind to the operational logger namespace configured by logging settings.
 logger = logging.getLogger("pipeline.operational")

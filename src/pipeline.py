@@ -3,14 +3,14 @@ import asyncio
 import logging
 from typing import Dict, Any
 
-from .contracts import (
+from contracts import (
     PipelineRequest,
     DomainResult,
     TransactionResult,
     CorrelationPayload,
     PipelineResponse
 )
-from .collaborators import FallbackPolicy, LatencyTracker, AuditService
+from collaborators import FallbackPolicy, LatencyTracker, AuditService
 
 logger = logging.getLogger(__name__)
 

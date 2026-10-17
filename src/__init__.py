@@ -6,7 +6,7 @@ time (those require real collaborators). Use :func:`create_pipeline` to
 build an application-ready pipeline when needed.
 """
 
-from src.logging_config import setup_logging
+from logging_config import setup_logging
 
 # Configure loggers/handlers before any pipeline components emit logs.
 setup_logging()
@@ -31,11 +31,11 @@ def create_pipeline(fast_path=None, domain_analyzer=None, transaction_analyzer=N
 		A fully constructed ``FraudDetectionPipeline`` instance.
 	"""
 	# Import inside the factory to keep top-level import lightweight.
-	from src.pipeline import FraudDetectionPipeline
+	from pipeline import FraudDetectionPipeline
 
 	# Lazy defaults: wrap existing modules into the adapter interfaces expected by the pipeline.
 	if fast_path is None:
-		from src.fast_path.fast_path import check as _fp_check
+		from fast_path.fast_path import check as _fp_check
 
 		class _FPWrapper:
 			"""Adapter exposing the fast-path ``check`` function as ``evaluate``."""
@@ -48,7 +48,7 @@ def create_pipeline(fast_path=None, domain_analyzer=None, transaction_analyzer=N
 		fast_path = _FPWrapper()
 
 	if domain_analyzer is None:
-		from src.domain_analyzer import analyze as _domain_analyze
+		from domain_analyzer import analyze as _domain_analyze
 
 		class _DomainAdapter:
 			"""Adapter exposing synchronous domain analysis via an async method."""
@@ -60,7 +60,7 @@ def create_pipeline(fast_path=None, domain_analyzer=None, transaction_analyzer=N
 		domain_analyzer = _DomainAdapter()
 
 	if transaction_analyzer is None:
-		from src.transaction_analyzer import TransactionAnalyzer as _TxImpl
+		from transaction_analyzer import TransactionAnalyzer as _TxImpl
 
 		class _TxAdapter:
 			"""Adapter bridging ``TransactionAnalyzer`` to pipeline async interface."""
@@ -76,7 +76,7 @@ def create_pipeline(fast_path=None, domain_analyzer=None, transaction_analyzer=N
 		transaction_analyzer = _TxAdapter()
 
 	if correlation_engine is None:
-		from src.correlation_engine.correlation_engine import CorrelationEngine as _CorrImpl
+		from correlation_engine.correlation_engine import CorrelationEngine as _CorrImpl
 
 		class _CorrAdapter:
 			"""Adapter converting correlation engine output into pipeline contract shape."""
@@ -100,7 +100,7 @@ def create_pipeline(fast_path=None, domain_analyzer=None, transaction_analyzer=N
 		correlation_engine = _CorrAdapter()
 
 	if explainability is None:
-		from src.explainability.explainability import ExplainabilityEngine as _ExplainImpl
+		from explainability.explainability import ExplainabilityEngine as _ExplainImpl
 
 		class _ExplainAdapter:
 			"""Adapter normalizing explainability output to pipeline response contracts."""
