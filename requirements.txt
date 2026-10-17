@@ -4,3 +4,5 @@ pandas
 tf2onnx
 tensorflow
 onnx
+fastapi
+uvicorn

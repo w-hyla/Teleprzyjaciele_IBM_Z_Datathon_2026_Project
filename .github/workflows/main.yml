@@ -1,0 +1,20 @@
+name: CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-containerize:
+    permissions: write-all
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Get SSH Key
+        run: echo '${{ secrets.PASSWORD }}' > key; chmod 700 key
+      - name: Copy files via SSH
+        run: "scp -o StrictHostKeyChecking=no -r -i ./key src/ ${{ secrets.USERNAME }}@${{ secrets.HOST }}:/work/"
+      - name: Restart service
+        run: "ssh -o StrictHostKeyChecking=no -i ./key -t ${{ secrets.USERNAME }}@${{ secrets.HOST }} 'sudo systemctl restart httpapi'"
