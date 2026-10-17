@@ -3,6 +3,7 @@
 
 """Moduł 2: domain_analyzer – homoglify, typosquatting, DGA (architecture/modules/domain_analyzer.md)."""
 
+import itertools
 import math
 import os
 import threading
@@ -14,6 +15,12 @@ HOMOGLYPH_RISK = 0.95
 TYPO_RISK_BY_DIST = {0: 0.90, 1: 0.90, 2: 0.70}
 DGA_RISK = 0.75
 BASELINE_RISK = 0.05
+
+# TLD masowo nadużywane przez phishing (darmowe lub bardzo tanie rejestracje) – podbijają ryzyko bez osobnego kodu przyczyny.
+SUSPICIOUS_TLD_BOOST = 0.15
+SUSPICIOUS_TLDS = frozenset({"xyz", "ru", "su", "tk", "ml", "ga", "cf", "gq", "top", "buzz", "icu"})
+# Znaki o kilku celach ('1' -> 'l'/'i', '6' -> 'b'/'s') mnożą warianty szkieletu; powyżej limitu bierzemy tylko kanoniczny.
+MAX_SKELETON_VARIANTS = 64
 
 ENTROPY_THRESHOLD = 3.8
 CONSONANT_VOWEL_THRESHOLD = 4.0
@@ -91,12 +98,25 @@ def _scripts(label: str) -> set[str]:
     return {unicodedata.name(c, "?").split(" ")[0] for c in label if c.isalpha()}
 
 
-def _skeleton(label: str) -> str:
-    hmap = load_homoglyph_map()
-    s = "".join(hmap.get(c, c) for c in label)
+def _replace_multi_char(s: str) -> str:
     for seq, replacement in MULTI_CHAR_CONFUSABLES:
         s = s.replace(seq, replacement)
     return s
+
+
+def _skeleton(label: str) -> str:
+    """Kanoniczny szkielet – każdy homoglif zamieniony na pierwszy cel z CSV: 'a1iorbаnk' -> 'aliorbank'."""
+    hmap = load_homoglyph_map()
+    return _replace_multi_char("".join(hmap[c][0] if c in hmap else c for c in label))
+
+
+def _skeletons(label: str) -> set[str]:
+    """Wszystkie szkielety etykiety: '1ng' -> {'lng', 'ing'}."""
+    hmap = load_homoglyph_map()
+    options = [hmap.get(c, (c,)) for c in label]
+    if math.prod(len(o) for o in options) > MAX_SKELETON_VARIANTS:
+        return {_skeleton(label)}
+    return {_replace_multi_char("".join(p)) for p in itertools.product(*options)}
 
 
 def _max_typo_dist(brand_sld: str, whole_sld: bool) -> int:
@@ -114,6 +134,7 @@ def _typo_candidates(sub_labels: list[str], sld: str) -> list[tuple[str, bool, b
     """Krotki (tekst, czy_cały_SLD, czy_pochodzi_z_SLD).
 
     'mbank-login.evil.com' -> ('evil', True, True), ('mbank-login', False, False), ('mbank', False, False), ...
+    Na końcu szkielety kandydatów zawierających homoglify: 'a11iorbank' -> 'alliorbank' (d=1 od 'aliorbank').
     """
     candidates = [(sld, True, True)]
     for label in sub_labels:
@@ -122,6 +143,8 @@ def _typo_candidates(sub_labels: list[str], sld: str) -> list[tuple[str, bool, b
         tokens = [t for t in label.split("-") if t]
         if len(tokens) > 1:
             candidates.extend((t, False, from_sld) for t in tokens)
+    candidates.extend((sk, whole_sld, from_sld) for text, whole_sld, from_sld in list(candidates)
+                      if (sk := _skeleton(text)) != text)
     return candidates
 
 # --- równoległe skanowanie marek (typosquatting) ---
@@ -226,14 +249,19 @@ def analyze(domain: str, target_brands=None) -> dict:
     risk = 0.0
     reasons = []
 
+    sld_is_popular = not is_official and registrable in load_tranco(TYPO_SKIP_TRANCO_TOP)
+    suspicious_tld = not is_official and host.rpartition(".")[2] in SUSPICIOUS_TLDS
+
     # 1. Homoglify / Punycode (UTS #39). Domena z nie-ASCII to IDN, który w DNS i tak idzie jako xn--.
+    #    Szkielet obejmuje też cyfry udające litery ('a1iorbank', 'pk0bp'), więc popularnych SLD nie sprawdzamy.
     is_punycode = "xn--" in host or not host.isascii()
     has_mixed_scripts = any(len(_scripts(label)) > 1 for label in [*sub_labels, sld])
     skeleton_hit = None
-    for label in [sld, *sub_labels]:
-        sk = _skeleton(label)
-        if sk != label and sk in brand_slds:
-            skeleton_hit = brand_slds[sk]
+    for label, from_sld in [(sld, True), *((s, False) for s in sub_labels)]:
+        if from_sld and sld_is_popular:
+            continue
+        skeleton_hit = next((brand_slds[sk] for sk in sorted(_skeletons(label)) if sk != label and sk in brand_slds), None)
+        if skeleton_hit:
             break
     if not is_official and (is_punycode or has_mixed_scripts or skeleton_hit):
         risk = max(risk, HOMOGLYPH_RISK)
@@ -244,7 +272,6 @@ def analyze(domain: str, target_brands=None) -> dict:
     min_dist = 0 if is_official else None
     closest_brand = registrable if is_official else skeleton_hit
     if not is_official:
-        sld_is_popular = registrable in load_tranco(TYPO_SKIP_TRANCO_TOP)
         candidates = _typo_candidates(sub_labels, sld)
         scan_min, best = _typo_scan(candidates, brand_items, sld_is_popular)
         if scan_min is not None and (min_dist is None or scan_min < min_dist):
@@ -253,10 +280,19 @@ def analyze(domain: str, target_brands=None) -> dict:
             typo_risk, _, _, closest_brand = best
             risk = max(risk, typo_risk)
             reasons.append("TYPOSQUATTING_LEVENSHTEIN")
+        elif suspicious_tld and not sld_is_popular:
+            # Ten sam SLD z innym sufiksem (ing.com) pomijamy, ale marka na podejrzanym TLD ('mbank.xyz') to podszywanie się.
+            brand = brand_slds.get(sld) or brand_slds.get(_skeleton(sld))
+            if brand is not None:
+                min_dist, closest_brand = 0, brand
+                risk = max(risk, TYPO_RISK_BY_DIST[0])
+                reasons.append("TYPOSQUATTING_LEVENSHTEIN")
 
     # 3. DGA – entropia Shannona i proporcja spółgłosek do samogłosek.
-    entropy = shannon_entropy(sld)
-    letters = [c for c in sld if c.isalpha()]
+    #    Cyrylickie samogłoski nie są w VOWELS, więc etykiety nie-ASCII liczymy na szkielecie.
+    dga_sld = sld if sld.isascii() else _skeleton(sld)
+    entropy = shannon_entropy(dga_sld)
+    letters = [c for c in dga_sld if c.isalpha()]
     is_dga = entropy > ENTROPY_THRESHOLD
     if len(letters) >= MIN_LETTERS_FOR_RATIO:
         vowels = sum(c in VOWELS for c in letters)
@@ -268,6 +304,10 @@ def analyze(domain: str, target_brands=None) -> dict:
 
     if not reasons:
         risk = 0.0 if is_official else BASELINE_RISK
+
+    # 4. Podejrzane TLD – addytywne podbicie ryzyka, także dla domen bez innych sygnałów.
+    if suspicious_tld:
+        risk += SUSPICIOUS_TLD_BOOST
 
     return {
         "domain_risk": min(1.0, risk),
@@ -335,7 +375,13 @@ def load_phishtank_hosts() -> frozenset[str]:
 
 
 @lru_cache(maxsize=None)
-def load_homoglyph_map() -> dict[str, str]:
-    """Mapa znak-homoglif -> łacińska mała litera, np. 'а' (cyrylica) -> 'a'."""
+def load_homoglyph_map() -> dict[str, tuple[str, ...]]:
+    """Mapa znak-homoglif -> łacińskie małe litery w kolejności z pliku, np. 'а' -> ('a',), '1' -> ('l', 'i')."""
+    hmap: dict[str, tuple[str, ...]] = {}
     with open(DATA_DIR / "homoglyphs.csv", encoding="utf-8", newline="") as f:
-        return {row["homoglyph_char"]: row["target_char"].lower() for row in csv.DictReader(f)}
+        for row in csv.DictReader(f):
+            targets = hmap.get(row["homoglyph_char"], ())
+            target = row["target_char"].lower()
+            if target not in targets:
+                hmap[row["homoglyph_char"]] = (*targets, target)
+    return hmap

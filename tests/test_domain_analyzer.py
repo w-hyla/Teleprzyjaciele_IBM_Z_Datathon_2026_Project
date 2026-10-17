@@ -3,7 +3,7 @@ import io
 import unittest
 from unittest import mock
 
-from src.domain_analyzer import analyze, levenshtein, shannon_entropy
+from src.domain_analyzer import TRUSTED_DOMAINS, analyze, levenshtein, shannon_entropy
 from tests.check_domain import evaluate, format_result, main
 
 
@@ -66,8 +66,53 @@ class DomainAnalyzerTest(unittest.TestCase):
         self.assertEqual(result["details"]["min_levenshtein_dist"], 2)
 
     def test_brand_in_subdomain_contract_example(self):
-        result = self.assertFlags("mbank.pl.weryfikacja-konta.top", ["TYPOSQUATTING_LEVENSHTEIN"], 0.90)
+        result = self.assertFlags("mbank.pl.weryfikacja-konta.top", ["TYPOSQUATTING_LEVENSHTEIN"], 1.0)
         self.assertEqual(result["details"]["closest_brand"], "mbank.pl")
+        self.assertFlags("mbank.pl.weryfikacja-konta.com", ["TYPOSQUATTING_LEVENSHTEIN"], 0.90)
+
+    def test_digits_look_like_letters(self):
+        for domain, brand in [("a1iorbank.pl", "aliorbank.pl"), ("a1i0rbank.pl", "aliorbank.pl"),
+                              ("pk0bp.pl", "pkobp.pl"), ("m6ank.pl", "mbank.pl"), ("santand3r.pl", "santander.pl"),
+                              ("1ng.pl", "ing.pl"), ("0lx.pl", "olx.pl"), ("a1iorbank.pl.evil.com", "aliorbank.pl")]:
+            with self.subTest(domain=domain):
+                result = analyze(domain)
+                self.assertIn("HOMOGLYPH_DETECTED", result["reason_codes"])
+                self.assertEqual(result["domain_risk"], 0.95)
+                self.assertEqual(result["details"]["closest_brand"], brand)
+
+    def test_digit_lookalike_with_extra_letter(self):
+        for domain in ("al1iorbank.pl", "a11iorbank.pl"):
+            with self.subTest(domain=domain):
+                result = analyze(domain)
+                self.assertGreaterEqual(result["domain_risk"], 0.90)
+                self.assertEqual(result["details"]["closest_brand"], "aliorbank.pl")
+
+    def test_cyrillic_lookalikes(self):
+        pairs = "aа cс bв kк oо nп xх yу mм hн eе eё bь wш tт uц nл"
+        brands = sorted(TRUSTED_DOMAINS | {"xtb.pl", "wise.com"})  # żadna zaufana domena nie ma 'x' ani 'w'
+        for latin, cyrillic in pairs.split():
+            brand = next(b for b in brands if latin in b.partition(".")[0])
+            sld, _, suffix = brand.partition(".")
+            domain = sld.replace(latin, cyrillic, 1) + "." + suffix
+            with self.subTest(domain=domain):
+                result = analyze(domain, target_brands=brands)
+                self.assertIn("HOMOGLYPH_DETECTED", result["reason_codes"])
+                self.assertEqual(result["details"]["closest_brand"], brand)
+
+    def test_all_cyrillic_lookalike_is_not_dga(self):
+        result = self.assertFlags("аliоrbаnк.pl", ["HOMOGLYPH_DETECTED"], 0.95)
+        self.assertEqual(result["details"]["closest_brand"], "aliorbank.pl")
+
+    def test_suspicious_tld_boosts_risk(self):
+        for domain in ("example.xyz", "example.ru", "strona.tk"):
+            self.assertFlags(domain, [], 0.20)
+        self.assertFlags("ailorbank.xyz", ["TYPOSQUATTING_LEVENSHTEIN"], 0.85)
+
+    def test_brand_on_suspicious_tld(self):
+        for domain, brand in [("mbank.xyz", "mbank.pl"), ("aliorbank.ru", "aliorbank.pl"), ("aliorbank.tk", "aliorbank.pl")]:
+            result = self.assertFlags(domain, ["TYPOSQUATTING_LEVENSHTEIN"], 1.0)
+            self.assertEqual(result["details"]["closest_brand"], brand)
+            self.assertEqual(result["details"]["min_levenshtein_dist"], 0)
 
     def test_brand_in_hyphenated_label(self):
         self.assertFlags("mbank-logowanie.pl", ["TYPOSQUATTING_LEVENSHTEIN"], 0.90)
@@ -87,7 +132,8 @@ class DomainAnalyzerTest(unittest.TestCase):
     def test_target_brands_override(self):
         self.assertFlags("mbank.pl", [], 0.0)
         result = analyze("paypa1.com", target_brands=["paypal.com"])
-        self.assertEqual(result["reason_codes"], ["TYPOSQUATTING_LEVENSHTEIN"])
+        self.assertEqual(result["reason_codes"], ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN"])
+        self.assertEqual(result["details"]["closest_brand"], "paypal.com")
 
 
 class CheckDomainTest(unittest.TestCase):
@@ -104,6 +150,9 @@ class CheckDomainTest(unittest.TestCase):
         ("xn--mbnk-cta.pl", 0.95, "DEEP_CHECK", ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN"]),
         ("xk7q9zpw3mfl2vbn.com", 0.75, "DEEP_CHECK", ["DGA_HIGH_ENTROPY"]),
         ("http://allegro.pl.showitems.ca/oferta", 0.90, "BLOCK", ["TYPOSQUATTING_LEVENSHTEIN"]),
+        ("a1iorbank.pl", 0.95, "DEEP_CHECK", ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN"]),
+        ("a11iorbank.pl", 0.90, "DEEP_CHECK", ["TYPOSQUATTING_LEVENSHTEIN"]),
+        ("mbank.xyz", 1.0, "DEEP_CHECK", ["TYPOSQUATTING_LEVENSHTEIN"]),
     ]
 
     def test_risk_table(self):
