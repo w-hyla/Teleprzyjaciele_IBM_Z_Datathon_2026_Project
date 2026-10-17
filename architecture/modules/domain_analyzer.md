@@ -13,7 +13,7 @@
     ```python
     result = {
         "domain_risk": float,        # znormalizowany wynik ryzyka: 0.0 (bezpieczna) do 1.0 (złośliwa)
-        "reason_codes": list[str],   # np. ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN", "SUSPICIOUS_TLD"]
+        "reason_codes": list[str],   # np. ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN"]
         "details": {
             "is_punycode": bool,
             "has_mixed_scripts": bool,
@@ -44,12 +44,12 @@ flowchart TD
     
     G --> H{"Entropia H > 3.8 lub spółgłoski/samogłoski > 4.0?"}
     H -- Tak --> I["Oznacz: DGA_HIGH_ENTROPY<br/>Ryzyko: max(risk, 0.75)"]
-    H -- Nie --> T{"TLD na liście podejrzanych (.xyz, .ru, .tk, ...)?"}
-    I --> T
-    T -- Tak --> U["Oznacz: SUSPICIOUS_TLD<br/>Ryzyko: max(risk, 0.60), marka na TLD: 0.95"]
-    T -- Nie --> J["Agregacja wyniku końcowego i kodów przyczyn"]
-    U --> J
-    J --> K["Zwróć: domain_risk (0.0 - 1.0) + reason_codes"]
+    H -- Nie --> J["Agregacja wyniku końcowego i kodów przyczyn"]
+    I --> J
+    J --> T{"TLD na liście podejrzanych (.xyz, .ru, .tk, ...)?"}
+    T -- Tak --> U["Podbicie: risk + 0.15<br/>(bez kodu przyczyny)"]
+    T -- Nie --> K["Zwróć: domain_risk (0.0 - 1.0) + reason_codes"]
+    U --> K
 
     classDef alert fill:#fef2f2,stroke:#f87171
     classDef step fill:#eff6ff,stroke:#3b82f6
@@ -78,6 +78,7 @@ flowchart TD
 	*   Jeśli $d_L = 2$: TYPOSQUATTING_LEVENSHTEIN (ryzyko 0.70).
 	*   Jeśli $d_L = 0$: domena oficjalna (ryzyko 0.0 – wyłapywane już w Fast-Path, tu stanowi bezpieczny fallback).
 	*   Odległość liczona jest także dla szkieletu kandydata, np. `a11iorbank` → `alliorbank` ($d_L = 1$).
+	*   Ten sam SLD co marka z innym sufiksem (`ing.com`) nie jest flagowany – chyba że sufiks jest podejrzanym TLD (`mbank.xyz`, `aliorbank.ru`): wtedy TYPOSQUATTING_LEVENSHTEIN z $d_L = 0$ (ryzyko 0.90).
 
 3.  **Detekcja DGA i Losowości (Entropia Shannona):**
 	*   Obliczenie entropii dla etykiety SLD o długości $N$: 
@@ -85,14 +86,11 @@ flowchart TD
     *   Wskaźnik proporcji spółgłosek do samogłosek oraz występowanie długich ciągów cyfr.
 	*   Wartość $H > 3.8$ (dla krótkich ciągów znaków) wskazuje na domenę generowaną maszynowo $\rightarrow$ flaga DGA_HIGH_ENTROPY
 
-4.  **Podejrzane TLD:**
-	*   TLD masowo nadużywane przez phishing: `xyz, ru, su, tk, ml, ga, cf, gq, top, buzz, icu` → SUSPICIOUS_TLD (ryzyko 0.60).
-	*   Marka na takim TLD (`mbank.xyz`, `aliorbank.ru`, `mbank.pl.weryfikacja-konta.top`) → ryzyko 0.95.
-
-5.  **Wyliczenie `domain_risk`:**
+4.  **Wyliczenie `domain_risk`:**
     *   Deterministyczna agregacja hierarchiczna:
-	$$\text{domain\_risk} = \min\left(1.0, \; \max(\text{risk}_{\text{homoglyph}}, \text{risk}_{\text{typo}}, \text{risk}_{\text{dga}}, \text{risk}_{\text{tld}})\right)$$
+	$$\text{domain\_risk} = \min\left(1.0, \; \max(\text{risk}_{\text{homoglyph}}, \text{risk}_{\text{typo}}, \text{risk}_{\text{dga}}) + 0.15 \cdot [\text{podejrzane TLD}]\right)$$
     *   Jeśli żaden wskaźnik nie przekroczył progów ostrzegawczych: `domain_risk = 0.05` (szum bazowy dla domen nieznanych).
+    *   Podejrzane TLD (masowo nadużywane przez phishing: `xyz, ru, su, tk, ml, ga, cf, gq, top, buzz, icu`) podbijają ryzyko o 0.15 bez osobnego kodu przyczyny, np. `example.xyz` → 0.20, `ailorbank.xyz` → 0.85, `mbank.xyz` → 1.0.
 
 
 ## 4. Kody przyczyn (Reason Codes dla modułu Explainability)
@@ -100,5 +98,4 @@ flowchart TD
 *   `HOMOGLYPH_DETECTED`: Strona używa znaków z obcych alfabetów (np. cyrylicy) lub cyfr udających litery łacińskie (np. `a1iorbank`).
 *   `TYPOSQUATTING_LEVENSHTEIN`: Nazwa różni się 1–2 literami od autentycznej domeny bankowej.
 *   `DGA_HIGH_ENTROPY`: Losowy ciąg znaków wskazujący na infrastrukturę przestępczą.
-*   `SUSPICIOUS_TLD`: Domena w końcówce często używanej przez oszustów (.xyz, .ru, .tk, ...).
 

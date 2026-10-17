@@ -102,7 +102,6 @@ flowchart TD
 | **`CROSS_LAYER_SYNERGY_PENALTY`** | WARNING | Unusual Operation | "Combining an unknown website address with this transfer amount falls outside your daily habits." | "Hold off on the transfer. Consult this transfer with a family member or call the bank's hotline." |
 | **`UNUSUAL_AMOUNT`** | WARNING | Unusually High Amount | "The transfer amount is significantly higher than your usual payments." | "Carefully check the entered amount and recipient details before confirming." |
 | **`DGA_HIGH_ENTROPY`** | WARNING | Suspicious Website Address | "The website address consists of random characters and may be unsafe." | "Do not continue the transaction on this page." |
-| **`SUSPICIOUS_TLD`** | WARNING | Suspicious Website Address | "The website address ends with an extension (like .xyz or .ru) that scammers often use." | "Do not enter passwords or SMS codes. Access the bank by typing the address manually or through the official app." |
 | **`ONNX_ANOMALY_HIGH`** | WARNING | Unusual Transfer Pattern | "The system detected an unusual execution of this transaction, resembling scam patterns." | "Carefully verify if you are confirming the correct transfer." |
 | **`HIGH_RISK_TX_TYPE`** | INFO | High-Risk Operation | "You are making an external transfer or withdrawal that requires additional confirmation." | "Ensure the recipient details are correct." |
 | **`FALLBACK_TRIGGERED`** | WARNING | Additional System Verification | "The security system is performing an extra check on your transaction." | "Follow the instructions on the screen." |

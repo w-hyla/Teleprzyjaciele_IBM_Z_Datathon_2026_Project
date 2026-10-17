@@ -14,11 +14,10 @@ HOMOGLYPH_RISK = 0.95
 # Odległość Levenshteina -> ryzyko. d=0 występuje tylko w subdomenie (np. 'mbank.pl.evil.top').
 TYPO_RISK_BY_DIST = {0: 0.90, 1: 0.90, 2: 0.70}
 DGA_RISK = 0.75
-SUSPICIOUS_TLD_RISK = 0.60
-BRAND_ON_SUSPICIOUS_TLD_RISK = 0.95
 BASELINE_RISK = 0.05
 
-# TLD masowo nadużywane przez phishing (darmowe lub bardzo tanie rejestracje).
+# TLD masowo nadużywane przez phishing (darmowe lub bardzo tanie rejestracje) – podbijają ryzyko bez osobnego kodu przyczyny.
+SUSPICIOUS_TLD_BOOST = 0.15
 SUSPICIOUS_TLDS = frozenset({"xyz", "ru", "su", "tk", "ml", "ga", "cf", "gq", "top", "buzz", "icu"})
 # Znaki o kilku celach ('1' -> 'l'/'i', '6' -> 'b'/'s') mnożą warianty szkieletu; powyżej limitu bierzemy tylko kanoniczny.
 MAX_SKELETON_VARIANTS = 64
@@ -251,6 +250,7 @@ def analyze(domain: str, target_brands=None) -> dict:
     reasons = []
 
     sld_is_popular = not is_official and registrable in load_tranco(TYPO_SKIP_TRANCO_TOP)
+    suspicious_tld = not is_official and host.rpartition(".")[2] in SUSPICIOUS_TLDS
 
     # 1. Homoglify / Punycode (UTS #39). Domena z nie-ASCII to IDN, który w DNS i tak idzie jako xn--.
     #    Szkielet obejmuje też cyfry udające litery ('a1iorbank', 'pk0bp'), więc popularnych SLD nie sprawdzamy.
@@ -280,6 +280,13 @@ def analyze(domain: str, target_brands=None) -> dict:
             typo_risk, _, _, closest_brand = best
             risk = max(risk, typo_risk)
             reasons.append("TYPOSQUATTING_LEVENSHTEIN")
+        elif suspicious_tld and not sld_is_popular:
+            # Ten sam SLD z innym sufiksem (ing.com) pomijamy, ale marka na podejrzanym TLD ('mbank.xyz') to podszywanie się.
+            brand = brand_slds.get(sld) or brand_slds.get(_skeleton(sld))
+            if brand is not None:
+                min_dist, closest_brand = 0, brand
+                risk = max(risk, TYPO_RISK_BY_DIST[0])
+                reasons.append("TYPOSQUATTING_LEVENSHTEIN")
 
     # 3. DGA – entropia Shannona i proporcja spółgłosek do samogłosek.
     #    Cyrylickie samogłoski nie są w VOWELS, więc etykiety nie-ASCII liczymy na szkielecie.
@@ -295,17 +302,12 @@ def analyze(domain: str, target_brands=None) -> dict:
         risk = max(risk, DGA_RISK)
         reasons.append("DGA_HIGH_ENTROPY")
 
-    # 4. Podejrzane TLD. Marka na takim TLD ('mbank.xyz') to niemal pewne podszywanie się.
-    if not is_official and host.rpartition(".")[2] in SUSPICIOUS_TLDS:
-        risk = max(risk, SUSPICIOUS_TLD_RISK)
-        reasons.append("SUSPICIOUS_TLD")
-        brand = closest_brand or brand_slds.get(sld) or brand_slds.get(_skeleton(sld))
-        if brand is not None:
-            risk = max(risk, BRAND_ON_SUSPICIOUS_TLD_RISK)
-            closest_brand = brand
-
     if not reasons:
         risk = 0.0 if is_official else BASELINE_RISK
+
+    # 4. Podejrzane TLD – addytywne podbicie ryzyka, także dla domen bez innych sygnałów.
+    if suspicious_tld:
+        risk += SUSPICIOUS_TLD_BOOST
 
     return {
         "domain_risk": min(1.0, risk),

@@ -66,7 +66,7 @@ class DomainAnalyzerTest(unittest.TestCase):
         self.assertEqual(result["details"]["min_levenshtein_dist"], 2)
 
     def test_brand_in_subdomain_contract_example(self):
-        result = self.assertFlags("mbank.pl.weryfikacja-konta.top", ["TYPOSQUATTING_LEVENSHTEIN", "SUSPICIOUS_TLD"], 0.95)
+        result = self.assertFlags("mbank.pl.weryfikacja-konta.top", ["TYPOSQUATTING_LEVENSHTEIN"], 1.0)
         self.assertEqual(result["details"]["closest_brand"], "mbank.pl")
         self.assertFlags("mbank.pl.weryfikacja-konta.com", ["TYPOSQUATTING_LEVENSHTEIN"], 0.90)
 
@@ -103,14 +103,16 @@ class DomainAnalyzerTest(unittest.TestCase):
         result = self.assertFlags("аliоrbаnк.pl", ["HOMOGLYPH_DETECTED"], 0.95)
         self.assertEqual(result["details"]["closest_brand"], "aliorbank.pl")
 
-    def test_suspicious_tld(self):
+    def test_suspicious_tld_boosts_risk(self):
         for domain in ("example.xyz", "example.ru", "strona.tk"):
-            self.assertFlags(domain, ["SUSPICIOUS_TLD"], 0.60)
+            self.assertFlags(domain, [], 0.20)
+        self.assertFlags("ailorbank.xyz", ["TYPOSQUATTING_LEVENSHTEIN"], 0.85)
 
     def test_brand_on_suspicious_tld(self):
         for domain, brand in [("mbank.xyz", "mbank.pl"), ("aliorbank.ru", "aliorbank.pl"), ("aliorbank.tk", "aliorbank.pl")]:
-            result = self.assertFlags(domain, ["SUSPICIOUS_TLD"], 0.95)
+            result = self.assertFlags(domain, ["TYPOSQUATTING_LEVENSHTEIN"], 1.0)
             self.assertEqual(result["details"]["closest_brand"], brand)
+            self.assertEqual(result["details"]["min_levenshtein_dist"], 0)
 
     def test_brand_in_hyphenated_label(self):
         self.assertFlags("mbank-logowanie.pl", ["TYPOSQUATTING_LEVENSHTEIN"], 0.90)
@@ -150,7 +152,7 @@ class CheckDomainTest(unittest.TestCase):
         ("http://allegro.pl.showitems.ca/oferta", 0.90, "BLOCK", ["TYPOSQUATTING_LEVENSHTEIN"]),
         ("a1iorbank.pl", 0.95, "DEEP_CHECK", ["HOMOGLYPH_DETECTED", "TYPOSQUATTING_LEVENSHTEIN"]),
         ("a11iorbank.pl", 0.90, "DEEP_CHECK", ["TYPOSQUATTING_LEVENSHTEIN"]),
-        ("mbank.xyz", 0.95, "DEEP_CHECK", ["SUSPICIOUS_TLD"]),
+        ("mbank.xyz", 1.0, "DEEP_CHECK", ["TYPOSQUATTING_LEVENSHTEIN"]),
     ]
 
     def test_risk_table(self):
