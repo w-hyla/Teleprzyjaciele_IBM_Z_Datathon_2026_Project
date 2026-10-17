@@ -1,6 +1,6 @@
 import unittest
 from typing import Dict, Any
-from explainability import ExplainabilityEngine
+from src.explainability import ExplainabilityEngine
 
 
 class TestExplainabilityEngine(unittest.TestCase):
