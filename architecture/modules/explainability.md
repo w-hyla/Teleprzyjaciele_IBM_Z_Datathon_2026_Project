@@ -10,7 +10,7 @@
     "aggregated_reasons": list[str], # List of reason codes from all upstream modules
     "context": {                     # Dynamic transaction metadata for message formatting
         "domain": str | None,        # Target website/domain (e.g., "mbank.pl.weryfikacja.top")
-        "amount": float | None,      # Transaction amount in PLN
+        "amount": float | None,      # Transaction amount
         "history_avg_amount": float | None, 
         "closest_brand": str | None  
     }
@@ -95,7 +95,7 @@ flowchart TD
 | Technical Code | UI Severity | Header (`user_title`) | Senior-Friendly Message (`user_message`) | Recommended Action (`recommended_action`) |
 | --- | --- | --- | --- | --- |
 | **`BLACKLISTED_PHISH`** | CRITICAL | Blacklisted Fake Site | "This website has been reported as a password-stealing scam." | "Close the page. Do not enter any data or SMS codes." |
-| **`HOMOGLYPH_DETECTED`** | CRITICAL | Fake Website | "The website address looks like your bank's name, but it contains hidden characters from another alphabet." | "Close this page. Access the bank by typing the address manually or through the official app."|
+| **`HOMOGLYPH_DETECTED`** | CRITICAL | Fake Website | "The website address looks like your bank's name, but it contains hidden characters from another alphabet or digits pretending to be letters." | "Close this page. Access the bank by typing the address manually or through the official app."|
 | **`TYPOSQUATTING_LEVENSHTEIN`** | WARNING | Suspicious Website Address | "There is a slight typo in the bank's website address. This could be a fake site created by scammers." | "Do not enter passwords or SMS codes. Carefully check the address in your browser." |
 | **`ACCOUNT_DRAIN_ZERO_BALANCE`** | CRITICAL | Account Drain | "This transfer withdraws almost all your money at once. This is a typical method used by scammers." | "If someone tells you to transfer savings to a 'safe account' – hang up, it is a scam attempt." |
 | **`MULE_DEST_ANOMALY`** | CRITICAL | Suspicious Recipient Account | "The recipient's account shows characteristics of a temporary account used by scammers." | "Interrupt the transaction and consult the bank's hotline." |

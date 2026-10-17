@@ -3,7 +3,10 @@
 
 """Moduł 2: domain_analyzer – homoglify, typosquatting, DGA (architecture/modules/domain_analyzer.md)."""
 
+import itertools
 import math
+import os
+import threading
 import unicodedata
 from collections import Counter
 
@@ -12,6 +15,12 @@ HOMOGLYPH_RISK = 0.95
 TYPO_RISK_BY_DIST = {0: 0.90, 1: 0.90, 2: 0.70}
 DGA_RISK = 0.75
 BASELINE_RISK = 0.05
+
+# TLD masowo nadużywane przez phishing (darmowe lub bardzo tanie rejestracje) – podbijają ryzyko bez osobnego kodu przyczyny.
+SUSPICIOUS_TLD_BOOST = 0.15
+SUSPICIOUS_TLDS = frozenset({"xyz", "ru", "su", "tk", "ml", "ga", "cf", "gq", "top", "buzz", "icu"})
+# Znaki o kilku celach ('1' -> 'l'/'i', '6' -> 'b'/'s') mnożą warianty szkieletu; powyżej limitu bierzemy tylko kanoniczny.
+MAX_SKELETON_VARIANTS = 64
 
 ENTROPY_THRESHOLD = 3.8
 CONSONANT_VOWEL_THRESHOLD = 4.0
@@ -89,12 +98,25 @@ def _scripts(label: str) -> set[str]:
     return {unicodedata.name(c, "?").split(" ")[0] for c in label if c.isalpha()}
 
 
-def _skeleton(label: str) -> str:
-    hmap = load_homoglyph_map()
-    s = "".join(hmap.get(c, c) for c in label)
+def _replace_multi_char(s: str) -> str:
     for seq, replacement in MULTI_CHAR_CONFUSABLES:
         s = s.replace(seq, replacement)
     return s
+
+
+def _skeleton(label: str) -> str:
+    """Kanoniczny szkielet – każdy homoglif zamieniony na pierwszy cel z CSV: 'a1iorbаnk' -> 'aliorbank'."""
+    hmap = load_homoglyph_map()
+    return _replace_multi_char("".join(hmap[c][0] if c in hmap else c for c in label))
+
+
+def _skeletons(label: str) -> set[str]:
+    """Wszystkie szkielety etykiety: '1ng' -> {'lng', 'ing'}."""
+    hmap = load_homoglyph_map()
+    options = [hmap.get(c, (c,)) for c in label]
+    if math.prod(len(o) for o in options) > MAX_SKELETON_VARIANTS:
+        return {_skeleton(label)}
+    return {_replace_multi_char("".join(p)) for p in itertools.product(*options)}
 
 
 def _max_typo_dist(brand_sld: str, whole_sld: bool) -> int:
@@ -112,6 +134,7 @@ def _typo_candidates(sub_labels: list[str], sld: str) -> list[tuple[str, bool, b
     """Krotki (tekst, czy_cały_SLD, czy_pochodzi_z_SLD).
 
     'mbank-login.evil.com' -> ('evil', True, True), ('mbank-login', False, False), ('mbank', False, False), ...
+    Na końcu szkielety kandydatów zawierających homoglify: 'a11iorbank' -> 'alliorbank' (d=1 od 'aliorbank').
     """
     candidates = [(sld, True, True)]
     for label in sub_labels:
@@ -120,12 +143,101 @@ def _typo_candidates(sub_labels: list[str], sld: str) -> list[tuple[str, bool, b
         tokens = [t for t in label.split("-") if t]
         if len(tokens) > 1:
             candidates.extend((t, False, from_sld) for t in tokens)
+    candidates.extend((sk, whole_sld, from_sld) for text, whole_sld, from_sld in list(candidates)
+                      if (sk := _skeleton(text)) != text)
     return candidates
 
+# --- równoległe skanowanie marek (typosquatting) ---
+MAX_WORKERS = 2
+PARALLEL_MIN_BRANDS = 2000   # poniżej tego jeden wątek jest szybszy
+
+_DEFAULT_INDEX = None        # (brand_slds, items) dla TRUSTED_DOMAINS
+
+
+def _build_index(brands):
+    """Jak w oryginale: sld -> brand (przy duplikatach SLD wygrywa ostatni).
+    items = [(idx, sld, brand), ...] w kolejności brand_slds."""
+    brand_slds = {split_host(b)[1]: b for b in brands}
+    items = [(i, sld, brand) for i, (sld, brand) in enumerate(brand_slds.items())]
+    return brand_slds, items
+
+
+def _get_index(target_brands):
+    global _DEFAULT_INDEX
+    if target_brands is None:
+        if _DEFAULT_INDEX is None:
+            _DEFAULT_INDEX = _build_index(TRUSTED_DOMAINS)
+        return (TRUSTED_DOMAINS, *_DEFAULT_INDEX)
+    return (target_brands, *_build_index(target_brands))
+
+
+def _better(a, b):
+    """Czy wynik a=(risk, cand_idx, brand_idx, brand) jest lepszy niż b.
+    Wyższe ryzyko wygrywa; przy remisie wcześniejsza para (kandydat, marka) –
+    tak samo jak ścisłe '>' w sekwencyjnej pętli oryginału."""
+    if b is None:
+        return True
+    if a[0] != b[0]:
+        return a[0] > b[0]
+    return (a[1], a[2]) < (b[1], b[2])
+
+
+def _scan_chunk(candidates, chunk, sld_is_popular):
+    """Skanuje fragment listy marek dla wszystkich kandydatów.
+    Zwraca (min_dist, best); best = (risk, cand_idx, brand_idx, brand) albo None."""
+    min_dist = None
+    best = None
+    for ci, (text, whole_sld, from_sld) in enumerate(candidates):
+        for bi, brand_sld, brand in chunk:
+            d = levenshtein(text, brand_sld)
+            if min_dist is None or d < min_dist:
+                min_dist = d
+            if from_sld and sld_is_popular:
+                continue
+            if d == 0 and whole_sld:
+                continue  # ten sam SLD, inny sufiks (np. ing.com)
+            if d <= _max_typo_dist(brand_sld, whole_sld):
+                cand = (TYPO_RISK_BY_DIST[d], ci, bi, brand)
+                if _better(cand, best):
+                    best = cand
+    return min_dist, best
+
+
+def _typo_scan(candidates, items, sld_is_popular):
+    if len(items) < PARALLEL_MIN_BRANDS or MAX_WORKERS < 2:
+        return _scan_chunk(candidates, items, sld_is_popular)
+
+    size = math.ceil(len(items) / MAX_WORKERS)
+    chunks = [items[i:i + size] for i in range(0, len(items), size)]
+    results = [None] * len(chunks)
+    errors = [None] * len(chunks)
+
+    def worker(k):
+        try:
+            results[k] = _scan_chunk(candidates, chunks[k], sld_is_popular)
+        except BaseException as e:          # nie gubimy wyjątków z wątków
+            errors[k] = e
+
+    threads = [threading.Thread(target=worker, args=(k,), name=f"typo-{k}") for k in range(len(chunks))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for e in errors:
+        if e is not None:
+            raise e
+
+    min_dist, best = None, None
+    for md, b in results:
+        if md is not None and (min_dist is None or md < min_dist):
+            min_dist = md
+        if b is not None and _better(b, best):
+            best = b
+    return min_dist, best
 
 def analyze(domain: str, target_brands=None) -> dict:
-    brands = TRUSTED_DOMAINS if target_brands is None else target_brands
-    brand_slds = {split_host(b)[1]: b for b in brands}
+    brands, brand_slds, brand_items = _get_index(target_brands)
 
     host = normalize_host(domain)
     registrable = registrable_domain(host)
@@ -137,44 +249,50 @@ def analyze(domain: str, target_brands=None) -> dict:
     risk = 0.0
     reasons = []
 
+    sld_is_popular = not is_official and registrable in load_tranco(TYPO_SKIP_TRANCO_TOP)
+    suspicious_tld = not is_official and host.rpartition(".")[2] in SUSPICIOUS_TLDS
+
     # 1. Homoglify / Punycode (UTS #39). Domena z nie-ASCII to IDN, który w DNS i tak idzie jako xn--.
+    #    Szkielet obejmuje też cyfry udające litery ('a1iorbank', 'pk0bp'), więc popularnych SLD nie sprawdzamy.
     is_punycode = "xn--" in host or not host.isascii()
     has_mixed_scripts = any(len(_scripts(label)) > 1 for label in [*sub_labels, sld])
     skeleton_hit = None
-    for label in [sld, *sub_labels]:
-        sk = _skeleton(label)
-        if sk != label and sk in brand_slds:
-            skeleton_hit = brand_slds[sk]
+    for label, from_sld in [(sld, True), *((s, False) for s in sub_labels)]:
+        if from_sld and sld_is_popular:
+            continue
+        skeleton_hit = next((brand_slds[sk] for sk in sorted(_skeletons(label)) if sk != label and sk in brand_slds), None)
+        if skeleton_hit:
             break
     if not is_official and (is_punycode or has_mixed_scripts or skeleton_hit):
         risk = max(risk, HOMOGLYPH_RISK)
         reasons.append("HOMOGLYPH_DETECTED")
 
     # 2. Typosquatting (Levenshtein) – SLD, etykiety subdomeny i ich części rozdzielone myślnikiem.
+    #    Lista marek jest skanowana równolegle w chunkach.
     min_dist = 0 if is_official else None
     closest_brand = registrable if is_official else skeleton_hit
-    typo_risk = 0.0
     if not is_official:
-        sld_is_popular = registrable in load_tranco(TYPO_SKIP_TRANCO_TOP)
-        for text, whole_sld, from_sld in _typo_candidates(sub_labels, sld):
-            for brand_sld, brand in brand_slds.items():
-                d = levenshtein(text, brand_sld)
-                if min_dist is None or d < min_dist:
-                    min_dist = d
-                if from_sld and sld_is_popular:
-                    continue
-                if d == 0 and whole_sld:
-                    continue  # ten sam SLD, inny sufiks (np. ing.com) – nie wiemy, czy to podróbka
-                if d <= _max_typo_dist(brand_sld, whole_sld) and TYPO_RISK_BY_DIST[d] > typo_risk:
-                    typo_risk = TYPO_RISK_BY_DIST[d]
-                    closest_brand = brand
-        if typo_risk:
+        candidates = _typo_candidates(sub_labels, sld)
+        scan_min, best = _typo_scan(candidates, brand_items, sld_is_popular)
+        if scan_min is not None and (min_dist is None or scan_min < min_dist):
+            min_dist = scan_min
+        if best is not None:
+            typo_risk, _, _, closest_brand = best
             risk = max(risk, typo_risk)
             reasons.append("TYPOSQUATTING_LEVENSHTEIN")
+        elif suspicious_tld and not sld_is_popular:
+            # Ten sam SLD z innym sufiksem (ing.com) pomijamy, ale marka na podejrzanym TLD ('mbank.xyz') to podszywanie się.
+            brand = brand_slds.get(sld) or brand_slds.get(_skeleton(sld))
+            if brand is not None:
+                min_dist, closest_brand = 0, brand
+                risk = max(risk, TYPO_RISK_BY_DIST[0])
+                reasons.append("TYPOSQUATTING_LEVENSHTEIN")
 
     # 3. DGA – entropia Shannona i proporcja spółgłosek do samogłosek.
-    entropy = shannon_entropy(sld)
-    letters = [c for c in sld if c.isalpha()]
+    #    Cyrylickie samogłoski nie są w VOWELS, więc etykiety nie-ASCII liczymy na szkielecie.
+    dga_sld = sld if sld.isascii() else _skeleton(sld)
+    entropy = shannon_entropy(dga_sld)
+    letters = [c for c in dga_sld if c.isalpha()]
     is_dga = entropy > ENTROPY_THRESHOLD
     if len(letters) >= MIN_LETTERS_FOR_RATIO:
         vowels = sum(c in VOWELS for c in letters)
@@ -186,6 +304,10 @@ def analyze(domain: str, target_brands=None) -> dict:
 
     if not reasons:
         risk = 0.0 if is_official else BASELINE_RISK
+
+    # 4. Podejrzane TLD – addytywne podbicie ryzyka, także dla domen bez innych sygnałów.
+    if suspicious_tld:
+        risk += SUSPICIOUS_TLD_BOOST
 
     return {
         "domain_risk": min(1.0, risk),
@@ -235,7 +357,7 @@ def split_host(host: str) -> tuple[list[str], str, str]:
 def load_tranco(top_n: int) -> frozenset[str]:
     """Pierwsze top_n domen z rankingu Tranco (plik bez nagłówka: rank,domain; końce linii CRLF)."""
     domains = set()
-    with open(DATA_DIR / "tranco_top_1m.csv", encoding="utf-8") as f:
+    with open(DATA_DIR / "tranco_top.csv", encoding="utf-8") as f:
         for i, line in enumerate(f):
             if i >= top_n:
                 break
@@ -253,7 +375,13 @@ def load_phishtank_hosts() -> frozenset[str]:
 
 
 @lru_cache(maxsize=None)
-def load_homoglyph_map() -> dict[str, str]:
-    """Mapa znak-homoglif -> łacińska mała litera, np. 'а' (cyrylica) -> 'a'."""
+def load_homoglyph_map() -> dict[str, tuple[str, ...]]:
+    """Mapa znak-homoglif -> łacińskie małe litery w kolejności z pliku, np. 'а' -> ('a',), '1' -> ('l', 'i')."""
+    hmap: dict[str, tuple[str, ...]] = {}
     with open(DATA_DIR / "homoglyphs.csv", encoding="utf-8", newline="") as f:
-        return {row["homoglyph_char"]: row["target_char"].lower() for row in csv.DictReader(f)}
+        for row in csv.DictReader(f):
+            targets = hmap.get(row["homoglyph_char"], ())
+            target = row["target_char"].lower()
+            if target not in targets:
+                hmap[row["homoglyph_char"]] = (*targets, target)
+    return hmap
