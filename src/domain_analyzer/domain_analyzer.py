@@ -4,6 +4,8 @@
 """Moduł 2: domain_analyzer – homoglify, typosquatting, DGA (architecture/modules/domain_analyzer.md)."""
 
 import math
+import os
+import threading
 import unicodedata
 from collections import Counter
 
@@ -122,10 +124,97 @@ def _typo_candidates(sub_labels: list[str], sld: str) -> list[tuple[str, bool, b
             candidates.extend((t, False, from_sld) for t in tokens)
     return candidates
 
+# --- równoległe skanowanie marek (typosquatting) ---
+MAX_WORKERS = min(32, (os.cpu_count() or 4))
+PARALLEL_MIN_BRANDS = 2000   # poniżej tego jeden wątek jest szybszy
+
+_DEFAULT_INDEX = None        # (brand_slds, items) dla TRUSTED_DOMAINS
+
+
+def _build_index(brands):
+    """Jak w oryginale: sld -> brand (przy duplikatach SLD wygrywa ostatni).
+    items = [(idx, sld, brand), ...] w kolejności brand_slds."""
+    brand_slds = {split_host(b)[1]: b for b in brands}
+    items = [(i, sld, brand) for i, (sld, brand) in enumerate(brand_slds.items())]
+    return brand_slds, items
+
+
+def _get_index(target_brands):
+    global _DEFAULT_INDEX
+    if target_brands is None:
+        if _DEFAULT_INDEX is None:
+            _DEFAULT_INDEX = _build_index(TRUSTED_DOMAINS)
+        return (TRUSTED_DOMAINS, *_DEFAULT_INDEX)
+    return (target_brands, *_build_index(target_brands))
+
+
+def _better(a, b):
+    """Czy wynik a=(risk, cand_idx, brand_idx, brand) jest lepszy niż b.
+    Wyższe ryzyko wygrywa; przy remisie wcześniejsza para (kandydat, marka) –
+    tak samo jak ścisłe '>' w sekwencyjnej pętli oryginału."""
+    if b is None:
+        return True
+    if a[0] != b[0]:
+        return a[0] > b[0]
+    return (a[1], a[2]) < (b[1], b[2])
+
+
+def _scan_chunk(candidates, chunk, sld_is_popular):
+    """Skanuje fragment listy marek dla wszystkich kandydatów.
+    Zwraca (min_dist, best); best = (risk, cand_idx, brand_idx, brand) albo None."""
+    min_dist = None
+    best = None
+    for ci, (text, whole_sld, from_sld) in enumerate(candidates):
+        for bi, brand_sld, brand in chunk:
+            d = levenshtein(text, brand_sld)
+            if min_dist is None or d < min_dist:
+                min_dist = d
+            if from_sld and sld_is_popular:
+                continue
+            if d == 0 and whole_sld:
+                continue  # ten sam SLD, inny sufiks (np. ing.com)
+            if d <= _max_typo_dist(brand_sld, whole_sld):
+                cand = (TYPO_RISK_BY_DIST[d], ci, bi, brand)
+                if _better(cand, best):
+                    best = cand
+    return min_dist, best
+
+
+def _typo_scan(candidates, items, sld_is_popular):
+    if len(items) < PARALLEL_MIN_BRANDS or MAX_WORKERS < 2:
+        return _scan_chunk(candidates, items, sld_is_popular)
+
+    size = math.ceil(len(items) / MAX_WORKERS)
+    chunks = [items[i:i + size] for i in range(0, len(items), size)]
+    results = [None] * len(chunks)
+    errors = [None] * len(chunks)
+
+    def worker(k):
+        try:
+            results[k] = _scan_chunk(candidates, chunks[k], sld_is_popular)
+        except BaseException as e:          # nie gubimy wyjątków z wątków
+            errors[k] = e
+
+    threads = [threading.Thread(target=worker, args=(k,), name=f"typo-{k}") for k in range(len(chunks))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for e in errors:
+        if e is not None:
+            raise e
+
+    min_dist, best = None, None
+    for md, b in results:
+        if md is not None and (min_dist is None or md < min_dist):
+            min_dist = md
+        if b is not None and _better(b, best):
+            best = b
+    return min_dist, best
 
 def analyze(domain: str, target_brands=None) -> dict:
-    brands = TRUSTED_DOMAINS if target_brands is None else target_brands
-    brand_slds = {split_host(b)[1]: b for b in brands}
+    brands, brand_slds, brand_items = _get_index(target_brands)
 
     host = normalize_host(domain)
     registrable = registrable_domain(host)
@@ -151,24 +240,17 @@ def analyze(domain: str, target_brands=None) -> dict:
         reasons.append("HOMOGLYPH_DETECTED")
 
     # 2. Typosquatting (Levenshtein) – SLD, etykiety subdomeny i ich części rozdzielone myślnikiem.
+    #    Lista marek jest skanowana równolegle w chunkach.
     min_dist = 0 if is_official else None
     closest_brand = registrable if is_official else skeleton_hit
-    typo_risk = 0.0
     if not is_official:
         sld_is_popular = registrable in load_tranco(TYPO_SKIP_TRANCO_TOP)
-        for text, whole_sld, from_sld in _typo_candidates(sub_labels, sld):
-            for brand_sld, brand in brand_slds.items():
-                d = levenshtein(text, brand_sld)
-                if min_dist is None or d < min_dist:
-                    min_dist = d
-                if from_sld and sld_is_popular:
-                    continue
-                if d == 0 and whole_sld:
-                    continue  # ten sam SLD, inny sufiks (np. ing.com) – nie wiemy, czy to podróbka
-                if d <= _max_typo_dist(brand_sld, whole_sld) and TYPO_RISK_BY_DIST[d] > typo_risk:
-                    typo_risk = TYPO_RISK_BY_DIST[d]
-                    closest_brand = brand
-        if typo_risk:
+        candidates = _typo_candidates(sub_labels, sld)
+        scan_min, best = _typo_scan(candidates, brand_items, sld_is_popular)
+        if scan_min is not None and (min_dist is None or scan_min < min_dist):
+            min_dist = scan_min
+        if best is not None:
+            typo_risk, _, _, closest_brand = best
             risk = max(risk, typo_risk)
             reasons.append("TYPOSQUATTING_LEVENSHTEIN")
 

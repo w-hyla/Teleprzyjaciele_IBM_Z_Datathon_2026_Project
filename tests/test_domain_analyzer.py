@@ -94,8 +94,9 @@ class CheckDomainTest(unittest.TestCase):
     # Wpis: "domena" (tylko wypisze wynik) albo (domena lub URL, oczekiwane ryzyko, werdykt fast_path, reason_codes);
     # pola z końca można pominąć. Dopisz swoją domenę tutaj.
     CASES = [
-        "mbank-weryfikacja.xyz",
         ("pkobp.pl", 0.0),
+        ("rnbank.pl", 0.95),
+        ("www.rnbank.pl", 0.95),
         ("mbank.pl", 0.0, "ALLOW", []),
         ("https://www.online.mbank.pl/login", 0.0, "ALLOW", []),
         ("wikipedia.org", 0.05, "DEEP_CHECK", []),
