@@ -2,6 +2,8 @@
 # Description: Evaluates behavioral risks using PaySim domain knowledge and ONNX inferencing natively on LinuxONE. Accounts for 55% of the risk engine weight
 import math
 import logging
+from pathlib import Path
+
 import numpy as np
 import onnxruntime as ort
 from typing import Dict, Any, List, Union, Tuple
@@ -16,7 +18,7 @@ class TransactionAnalyzer:
     Output: transaction_risk (float), reason_codes (list[str])
     """
 
-    def __init__(self, model_path: str = "models/fraud_detect.onnx"):
+    def __init__(self, model_path: str = Path(__file__).resolve().parents[2] / "models/fraud_detect.onnx"):
         self.model_path = model_path
         self.epsilon = 1e-9  # Prevents ZeroDivisionError when calculating ratios
         self.ort_session = None

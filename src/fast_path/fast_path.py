@@ -5,7 +5,7 @@
 
 from functools import lru_cache
 
-from src.domain_analyzer import (
+from domain_analyzer import (
     TRUSTED_DOMAINS,
     load_phishtank_hosts,
     load_tranco,
