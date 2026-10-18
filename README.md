@@ -287,6 +287,8 @@ If a model fails to load or to run inference, its analyzer returns a neutral 0.5
 | `tranco_top.csv` | Tranco top-1M domains (false-positive suppression) |
 | `homoglyphs.csv` | Latin ↔ Cyrillic/Greek confusables (homoglyph skeletons) |
 
+Where each dataset comes from, its license and how to cite it are listed in [Third-Party Attributions & Open-Source Dependencies](#third-party-attributions--open-source-dependencies).
+
 ## Deployment
 
 Every push to `main` triggers [`.github/workflows/main.yml`](.github/workflows/main.yml). It copies `src/` to the LinuxONE host over SSH and restarts the `httpapi` systemd service. It needs the repository secrets `HOST`, `USERNAME` and `PASSWORD` (the SSH private key).
@@ -296,6 +298,76 @@ Every push to `main` triggers [`.github/workflows/main.yml`](.github/workflows/m
 - `create_pipeline()` does not wire up `SessionAnalyzer` yet. To get real session scoring instead of the `FALLBACK_SESSION` default, pass `session_analyzer=SessionAnalyzer()` to `FraudDetectionPipeline`.
 - The `/check` API does not take `transaction_id` or `user_context` yet, so fast-path amount checks see a history average of 0.
 - Possible next steps: a full Public Suffix List instead of the simplified suffix set; per-user baselines kept outside process memory; IBM Z Deep Learning Compiler / Telum on-chip AI acceleration for ONNX.
+
+---
+
+## Third-Party Attributions & Open-Source Dependencies
+
+This project is built on the open-source libraries, public datasets and standards listed below, as the IBM Z Datathon rules require. Our own code is released under the [MIT License](LICENSE.md). Every third-party component keeps its original license.
+
+### Python libraries: inference & API runtime
+
+| Dependency | Purpose in our pipeline | License | Link |
+|---|---|---|---|
+| **NumPy** | Feature vectors for both ONNX models (`transaction_analyzer`, `session_analyzer`) | BSD-3-Clause | <https://github.com/numpy/numpy> |
+| **ONNX Runtime** | CPU inference of `fraud_detect.onnx` and `session_anomaly.onnx` on s390x | MIT | <https://github.com/microsoft/onnxruntime> |
+| **FastAPI** | REST service exposing `POST /check` (`src/api.py`) and the OpenAPI docs | MIT | <https://github.com/fastapi/fastapi> |
+| **Pydantic** | Request validation for the API payload (`src/api.py`) | MIT | <https://github.com/pydantic/pydantic> |
+| **Uvicorn** | ASGI server that runs the FastAPI app on the LinuxONE host | BSD-3-Clause | <https://github.com/encode/uvicorn> |
+| **Python standard library** (`asyncio`, `unicodedata`, `csv`, `math`, `urllib`, `functools`, `threading`, `logging`, `unittest`, …) | Parallel analyzers (`asyncio.gather`); Unicode script names and IDNA/Punycode decoding for homoglyph detection (`unicodedata`, `idna`/`punycode` codecs); CSV loading; entropy maths; URL parsing; LRU caches; audit logging | PSF License 2.0 (`unicodedata` ships Unicode Character Database data under the Unicode License v3) | <https://docs.python.org/3/license.html> |
+
+### Python libraries: model training & export (`notebooks/`)
+
+| Dependency | Purpose in our pipeline | License | Link |
+|---|---|---|---|
+| **pandas** | Loading and feature engineering of the PaySim and CIC-IDS CSVs | BSD-3-Clause | <https://github.com/pandas-dev/pandas> |
+| **TensorFlow / Keras** | Training both feed-forward networks (`Sequential`, `Dense`, `Dropout`), CPU-only | Apache-2.0 | <https://github.com/tensorflow/tensorflow> |
+| **tf2onnx** | Exporting the Keras models to ONNX (opset 13) | Apache-2.0 | <https://github.com/onnx/tensorflow-onnx> |
+| **ONNX** | Portable model format behind `models/*.onnx` (pulled in by tf2onnx) | Apache-2.0 | <https://github.com/onnx/onnx> |
+
+### Testing & CI/CD
+
+| Dependency | Purpose in our pipeline | License | Link |
+|---|---|---|---|
+| **pytest** | Test runner for `tests/` (the suites are written with `unittest`) | MIT | <https://github.com/pytest-dev/pytest> |
+| **actions/checkout** | Checks out the repo in the GitHub Actions deploy workflow | MIT | <https://github.com/actions/checkout> |
+
+### Web dashboard (`src/frontend/`)
+
+| Dependency | Purpose in our pipeline | License | Link |
+|---|---|---|---|
+| **React** / **React DOM** | UI components for the demo dashboard | MIT | <https://github.com/facebook/react> |
+| **Vite** + **@vitejs/plugin-react** | Dev server and production build (`dist/`) | MIT | <https://github.com/vitejs/vite> · <https://github.com/vitejs/vite-plugin-react> |
+| **Tailwind CSS** (+ `@tailwindcss/vite`) | Utility-first styling | MIT | <https://github.com/tailwindlabs/tailwindcss> |
+| **TypeScript** | Type-checked frontend sources | Apache-2.0 | <https://github.com/microsoft/TypeScript> |
+
+### Datasets (`data/`)
+
+| Dataset | File | Purpose in our pipeline | License / terms | Link |
+|---|---|---|---|---|
+| **PaySim**: synthetic mobile-money transactions | `paysim_downsized.csv` | Training data for the transaction FFNN; source of the `TRANSFER`/`CASH_OUT`, account-drain and mule rules | CC BY-SA 4.0 | <https://www.kaggle.com/datasets/ealaxi/paysim1> |
+| **CIC-IDS** network-flow datasets (CIC-IDS2017 / CSE-CIC-IDS2018 / CIC-DDoS2019, cleaned "CIC-IDS Collection") | `cic_ids_downsized.csv` | Training data for the session flow-anomaly FFNN (benign vs. attack flows) | Canadian Institute for Cybersecurity terms: free for research, citation required | <https://www.unb.ca/cic/datasets/> · <https://www.kaggle.com/datasets/dhoogla/cicidscollection> |
+| **PhishTank** verified phishing URLs | `phishtank.csv` | Fast-path blocklist (`BLACKLISTED_PHISH`) | CC BY-SA 2.5 | <https://phishtank.org/developer_info.php> |
+| **Tranco** top-1M domain ranking (list ID `N26LW`) | `tranco_top.csv` | Shared-host exclusion for the blocklist, false-positive suppression for typosquatting and homoglyph checks | Free to use; citation requested | <https://tranco-list.eu/list/N26LW/1000000> |
+| **Unicode confusables** (UTS #39, Unicode Security Mechanisms) | `homoglyphs.csv` | Curated Latin ↔ Cyrillic/Greek/Common look-alike map used to compute domain "skeletons" | Unicode License v3 | <https://www.unicode.org/reports/tr39/> · <https://www.unicode.org/Public/security/latest/confusables.txt> |
+
+The files in `data/` are **downsized or curated subsets** of the original datasets, committed only so the demo and the training notebooks are reproducible. They are still covered by the original licenses above, so the PaySim and PhishTank subsets stay under their CC BY-SA terms.
+
+### Standards & techniques
+
+| Reference | Purpose in our pipeline | Link |
+|---|---|---|
+| **Unicode TR #39**: Unicode Security Mechanisms | Skeleton / mixed-script approach for homoglyph detection (`domain_analyzer`) | <https://www.unicode.org/reports/tr39/> |
+| **RFC 3492 (Punycode)** / **IDNA** | Decoding `xn--` labels before homoglyph analysis | <https://www.rfc-editor.org/rfc/rfc3492> |
+| **JA3 TLS fingerprinting** (Salesforce, BSD-3-Clause) | Client-fingerprint field whose mid-session change signals a hijacked session (`session_analyzer`) | <https://github.com/salesforce/ja3> |
+
+### Citations
+
+- E. A. Lopez-Rojas, A. Elmir, S. Axelsson. *PaySim: A financial mobile money simulator for fraud detection.* EMSS 2016.
+- I. Sharafaldin, A. H. Lashkari, A. A. Ghorbani. *Toward Generating a New Intrusion Detection Dataset and Intrusion Traffic Characterization.* ICISSP 2018.
+- I. Sharafaldin, A. H. Lashkari, S. Hakak, A. A. Ghorbani. *Developing Realistic Distributed Denial of Service (DDoS) Attack Dataset and Taxonomy.* ICCST 2019.
+- V. Le Pochat, T. Van Goethem, S. Tajalizadegan, M. Korczyński, W. Joosen. *Tranco: A Research-Oriented Top Sites Ranking Hardened Against Manipulation.* NDSS 2019.
+- PhishTank, operated by Cisco Talos Intelligence Group: <https://phishtank.org>.
 
 ## Team
 
