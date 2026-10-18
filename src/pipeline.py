@@ -5,10 +5,8 @@ from typing import Dict, Any
 
 from .contracts import (
     PipelineRequest,
-    DomainResult,
-    TransactionResult,
     CorrelationPayload,
-    PipelineResponse
+    PipelineResponse,
 )
 from .collaborators import FallbackPolicy, LatencyTracker, AuditService
 
@@ -18,7 +16,7 @@ logger = logging.getLogger(__name__)
 class FraudDetectionPipeline:
     """Orchestrates fast triage, deep analysis, scoring, and explainable output."""
 
-    def __init__(self, fast_path, domain_analyzer, transaction_analyzer, correlation_engine, explainability):
+    def __init__(self, fast_path, domain_analyzer, transaction_analyzer, correlation_engine, explainability, session_analyzer=None):
         """Initialize the pipeline with pluggable collaborators and runtime safety policies.
 
         Args:
@@ -27,6 +25,7 @@ class FraudDetectionPipeline:
             transaction_analyzer: Async analyzer for transaction-level risk signals.
             correlation_engine: Component that combines analyzer outputs into a final score.
             explainability: Formatter for user-facing decisions and reasons.
+            session_analyzer: Session-level analyzer for detecting session hijack/anomalies.
         """
         # External collaborators are injected so each module can be swapped independently.
         self.fast_path = fast_path
@@ -34,6 +33,7 @@ class FraudDetectionPipeline:
         self.transaction_analyzer = transaction_analyzer
         self.correlation_engine = correlation_engine
         self.explainability = explainability
+        self.session_analyzer = session_analyzer
 
         self.fallback_policy = FallbackPolicy()
         self.latency_tracker = LatencyTracker()
@@ -60,6 +60,7 @@ class FraudDetectionPipeline:
         # 1) Normalize payload into a strongly-shaped request contract.
         tx_data = raw_payload.get("transaction", {})
         ctx_data = raw_payload.get("user_context", {})
+        session_data = raw_payload.get("session_context", {})
         request: PipelineRequest = {
             "transaction_id": raw_payload.get("transaction_id", ""),
             "domain": raw_payload.get("domain", ""),
@@ -73,6 +74,16 @@ class FraudDetectionPipeline:
             },
             "user_context": {
                 "history_avg_amount": float(ctx_data.get("history_avg_amount", 0.0))
+            }
+            ,
+            "session_context": {
+                "session_id": session_data.get("session_id", ""),
+                "ja3_hash": session_data.get("ja3_hash", ""),
+                "ip_address": session_data.get("ip_address", ""),
+                "asn": int(session_data.get("asn", 0)),
+                "flow_duration": float(session_data.get("flow_duration", 0.0)),
+                "flow_bytes_per_sec": float(session_data.get("flow_bytes_per_sec", 0.0)),
+                "packet_rate": float(session_data.get("packet_rate", 0.0)),
             }
         }
 
@@ -141,9 +152,25 @@ class FraudDetectionPipeline:
                     f"Production Rescue: Unhandled exception in transaction_analyzer masked by fallback: {e}")
                 return self.fallback_policy.get_transaction_fallback()
 
-        domain_result, tx_result = await asyncio.gather(
+        async def safe_session_analyze():
+            """Run session analysis with guarded fallback behavior.
+
+            The session analyzer is optional; if missing or failing we return a
+            deterministic fallback to keep the pipeline available.
+            """
+            try:
+                if not self.session_analyzer:
+                    return self.fallback_policy.get_session_fallback()
+                return await self.session_analyzer.analyze(request["session_context"])
+            except Exception as e:
+                # Deterministic fail-open handling in production
+                logger.critical(f"Production Rescue: Unhandled exception in session_analyzer: {e}")
+                return self.fallback_policy.get_session_fallback()
+
+        domain_result, tx_result, session_result = await asyncio.gather(
             safe_domain_analyze(),
-            safe_transaction_analyze()
+            safe_transaction_analyze(),
+            safe_session_analyze(),
         )
         self.latency_tracker.end_phase("deep_check")
 
