@@ -7,10 +7,10 @@ small and dependency-light to keep it suitable for hackathon demos and
 constrained environments (e.g. LinuxONE).
 """
 
+import os
 import collections
 import logging
 from typing import Tuple
-
 import numpy as np
 import onnxruntime as ort
 
@@ -33,25 +33,32 @@ class SessionAnalyzer:
     """
 
     def __init__(self, model_path: str = "models/session_anomaly.onnx", max_active_sessions: int = 100000):
-        # Create an ONNX inference session for small flow-anomaly model.
-        # Keep errors surfaced to the caller during instantiation.
-        self.session = ort.InferenceSession(model_path)
+        # Store model path and lazily attempt to load an ONNX session if present.
+        self.model_path = model_path
+        self.session = None
+
+        if os.path.exists(model_path):
+            try:
+                # Optimized for LinuxONE / s390x on-chip inference[cite: 5]
+                self.session = ort.InferenceSession(model_path)
+                logger.info(f"Loaded FFNN ONNX session model from {model_path}")
+            except Exception as e:
+                logger.error(f"Failed to load session ONNX model: {e}")
+        else:
+            logger.warning(f"Session model {model_path} not found.")
 
         # LRU store to keep memory bounded in long-running demos.
         self.max_sessions = max_active_sessions
         self._baselines = collections.OrderedDict()
 
-    def _get_or_update_baseline(
-        self, session_id: str, current_ja3: str, current_ip: str, current_asn: int
-    ) -> Tuple[bool, bool]:
-        """Check and update the baseline fingerprint for a session.
+    def _get_or_update_baseline(self, session_id: str, current_ja3: str, current_ip: str, current_asn: int) -> Tuple[bool, bool]:
+        """Evaluates identity footprint shifts using an O(1) LRU cache.
 
-        Returns a pair (ja3_shifted, asn_shifted). If the session is new the
-        baseline is recorded and (False, False) is returned.
+        Returns (ja3_shifted, asn_shifted). If session_id is missing or new,
+        returns (False, False) and records a baseline for new sessions.
         """
 
         if not session_id:
-            # Missing session identifier -> cannot compare baselines.
             return False, False
 
         if session_id in self._baselines:
@@ -74,57 +81,52 @@ class SessionAnalyzer:
         return False, False
 
     async def analyze(self, session_context: SessionContext) -> SessionResult:
-        """Compute a session risk summary from telemetry.
+        """Analyzes session telemetry for flow anomalies and footprint shifts.
 
         Steps:
-        1. Check for JA3/ASN shifts against a cached baseline.
-        2. Run a tiny ONNX flow-anomaly model to score netflow telemetry.
-        3. Synthesize session risk and reason codes.
-
-        The function is intentionally robust: ONNX failures degrade to a
-        conservative, fail-open score to avoid blocking upstream pipelines.
+        1. Check JA3/ASN shifts against a cached baseline.
+        2. Feature-engineer netflow telemetry and run the ONNX FFNN if loaded.
+        3. Fuse model score with heuristic footprint shift risk.
         """
 
         session_id = session_context.get("session_id", "")
         ja3_hash = session_context.get("ja3_hash", "")
         ip_address = session_context.get("ip_address", "")
-        asn = session_context.get("asn", 0)
+        asn = int(session_context.get("asn", 0))
 
-        # 1) Baseline identity check (JA3/ASN shifts)
-        ja3_shift, asn_shift = self._get_or_update_baseline(session_id, ja3_hash, ip_address, asn)
+        duration = float(session_context.get("flow_duration", 0.0))
+        bytes_sec = float(session_context.get("flow_bytes_per_sec", 0.0))
+        pkt_rate = float(session_context.get("packet_rate", 0.0))
 
-        # 2) Prepare flow telemetry vector for ONNX model
-        flow_vector = np.array(
-            [
-                [
-                    session_context.get("flow_duration", 0.0),
-                    session_context.get("flow_bytes_per_sec", 0.0),
-                    session_context.get("packet_rate", 0.0),
-                ]
-            ],
-            dtype=np.float32,
-        )
-
-        # ONNX inference guarded to keep pipeline available on model failures.
-        try:
-            onnx_preds = self.session.run(None, {self.session.get_inputs()[0].name: flow_vector})
-            # Model output indexing depends on model shape; keep as float.
-            flow_anomaly_score = float(onnx_preds[0][0][1])
-        except Exception as exc:  # pragma: no cover - operational fallback
-            logger.warning("Session ONNX inference failure: %s", exc)
-            flow_anomaly_score = 0.50
-
-        # 3) Synthesize session risk and reasons
-        session_risk = flow_anomaly_score
         reason_codes = []
+        base_risk = 0.0
 
-        # Penalize when identity shifts are detected (possible hijack).
+        # 1. Identity footprint shift check (JA3/ASN)
+        ja3_shift, asn_shift = self._get_or_update_baseline(session_id, ja3_hash, ip_address, asn)
         if ja3_shift or asn_shift:
-            session_risk = max(session_risk, 0.85)
-            reason_codes.append("SESSION_HIJACK_JA3_SHIFT")
+            base_risk = 0.85
+            reason_codes.append("SESSION_HIJACK_FOOTPRINT_SHIFT")
 
-        if flow_anomaly_score > 0.75:
+        # 2. Feature engineering matching training export
+        log_bytes_per_sec = np.log1p(bytes_sec)
+        features = np.array([[duration, log_bytes_per_sec, pkt_rate]], dtype=np.float32)
+
+        # 3. ONNX FFNN inference (if model loaded)
+        onnx_score = 0.0
+        if self.session:
+            try:
+                preds = self.session.run(None, {self.session.get_inputs()[0].name: features})
+                # Sigmoid output compresses to a single probability scalar
+                onnx_score = float(preds[0][0][0])
+            except Exception as e:  # pragma: no cover - operational fallback
+                logger.warning(f"ONNX FFNN inference failed, falling back: {e}")
+                onnx_score = 0.50
+
+        if onnx_score >= 0.70:
             reason_codes.append("FLOW_ANOMALY_HIGH")
+
+        # 4. Risk fusion
+        session_risk = min(1.0, max(onnx_score, base_risk))
 
         return {
             "session_risk": round(session_risk, 2),
@@ -132,7 +134,7 @@ class SessionAnalyzer:
             "details": {
                 "ja3_shift_detected": ja3_shift,
                 "asn_shift_detected": asn_shift,
-                "onnx_flow_anomaly_score": round(flow_anomaly_score, 2),
+                "onnx_flow_anomaly_score": round(onnx_score, 2),
                 "baseline_ip_match": not asn_shift,
             },
         }

@@ -180,6 +180,7 @@ class FraudDetectionPipeline:
             request["transaction_id"],
             domain_result,
             tx_result,
+            session_result,
             context={
                 "domain": request["domain"],
                 "amount": request["transaction"]["amount"],

@@ -6,6 +6,9 @@ time (those require real collaborators). Use :func:`create_pipeline` to
 build an application-ready pipeline when needed.
 """
 
+from typing import cast
+
+from src.contracts import ExplainabilityContext, SessionResult
 from src.logging_config import setup_logging
 
 # Configure loggers/handlers before any pipeline components emit logs.
@@ -85,14 +88,36 @@ def create_pipeline(fast_path=None, domain_analyzer=None, transaction_analyzer=N
 				"""Create and hold the underlying correlation implementation."""
 				self._impl = _CorrImpl()
 
-			def evaluate(self, tx_id, domain_result, tx_result, context=None):
+			def evaluate(self, tx_id, domain_result, tx_result, session_result=None, context=None):
 				"""Compute final risk and return a ``CorrelationPayload``-compatible dict."""
-				res = self._impl.calculate_final_risk(domain_result, tx_result)
+				if session_result is None:
+					session_result = {
+						"session_risk": 0.0,
+						"reason_codes": [],
+						"details": {
+							"ja3_shift_detected": False,
+							"asn_shift_detected": False,
+							"onnx_flow_anomaly_score": 0.0,
+							"baseline_ip_match": True,
+						},
+					}
+				res = self._impl.evaluate(
+					tx_id,
+					domain_result,
+					tx_result,
+					cast(SessionResult, cast(object, session_result)),
+					cast(ExplainabilityContext, cast(object, context or {
+						"domain": None,
+						"amount": None,
+						"history_avg_amount": None,
+						"closest_brand": None,
+					})),
+				)
 				return {
 					"transaction_id": tx_id,
 					"final_score": float(res.get("final_score", 0.0)),
 					"action": res.get("action", "ALLOW"),
-					"override_triggered": bool(res.get("override_triggered", False)),
+					"override_triggered": "CRITICAL_OVERRIDE_TRIGGERED" in res.get("aggregated_reasons", []),
 					"aggregated_reasons": res.get("aggregated_reasons", []),
 					"context": context or {},
 				}
