@@ -1,7 +1,14 @@
+import sys
+from pathlib import Path
+
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-from __init__ import create_pipeline
+
+# Ensure repository root is on sys.path so `src` can be imported as a package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src import create_pipeline
 
 app = FastAPI()
 
