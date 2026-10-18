@@ -1,9 +1,16 @@
+# Inference pipeline (src/)
 numpy
 onnxruntime
-pandas
-tf2onnx
-tensorflow
-onnx
+
+# REST API (src/api.py)
 fastapi
+pydantic
 uvicorn
+
+# Model training (notebooks/)
 pandas
+tensorflow
+tf2onnx
+
+# Tests (tests/)
+pytest
