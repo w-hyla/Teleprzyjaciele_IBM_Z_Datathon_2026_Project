@@ -7,7 +7,7 @@ measurement, and deterministic audit logging.
 import time
 import logging
 from typing import List
-from contracts import DomainResult, TransactionResult
+from .contracts import DomainResult, TransactionResult, SessionResult
 
 # Bind to the operational logger namespace configured by logging settings.
 logger = logging.getLogger("pipeline.operational")
@@ -42,6 +42,19 @@ class FallbackPolicy:
                 "closest_brand": None,
                 "shannon_entropy": 0.0
             }
+        }
+
+    def get_session_fallback(self) -> SessionResult:
+        """Return a conservative session result used when session analysis fails."""
+        return {
+            "session_risk": 0.50,
+            "reason_codes": ["FALLBACK_SESSION"],
+            "details": {
+                "ja3_shift_detected": False,
+                "asn_shift_detected": False,
+                "onnx_flow_anomaly_score": 0.50,
+                "baseline_ip_match": True,
+            },
         }
 
 

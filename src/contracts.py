@@ -24,14 +24,29 @@ class UserContext(TypedDict):
 
     history_avg_amount: float
 
+class SessionContext(TypedDict):
+    """Optional session-level signals captured at ingestion.
+
+    Fields are lightweight and intended for auxiliary heuristics (session
+    hijack detection, flow anomalies) rather than primary transaction scoring.
+    """
+
+    session_id: str
+    ja3_hash: str
+    ip_address: str
+    asn: int
+    flow_duration: float
+    flow_bytes_per_sec: float
+    packet_rate: float
+
 
 class PipelineRequest(TypedDict):
     """Normalized request shape expected by the pipeline orchestrator."""
-
     transaction_id: str
     domain: str
     transaction: TransactionData
     user_context: UserContext
+    session_context: SessionContext
 
 
 # 2) Domain analyzer result
@@ -112,3 +127,26 @@ class PipelineResponse(TypedDict):
     aggregated_reasons: List[str]
     user_intervention: UserIntervention
     audit_trail: str
+
+
+class SessionDetails(TypedDict):
+    """Low-level session indicators used for session-risk scoring.
+
+    - ja3_shift_detected: whether TLS fingerprint (JA3) changed mid-session
+    - asn_shift_detected: whether ASN changed for the session IPs
+    - onnx_flow_anomaly_score: model-produced flow anomaly score (0.0-1.0)
+    - baseline_ip_match: whether the IP matches the user's baseline fingerprint
+    """
+
+    ja3_shift_detected: bool
+    asn_shift_detected: bool
+    onnx_flow_anomaly_score: float
+    baseline_ip_match: bool
+
+
+class SessionResult(TypedDict):
+    """Session analyzer output with aggregated session risk and reasons."""
+
+    session_risk: float
+    reason_codes: List[str]
+    details: SessionDetails
