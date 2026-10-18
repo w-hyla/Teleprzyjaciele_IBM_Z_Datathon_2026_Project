@@ -5,6 +5,8 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from contracts import SessionContext
+
 # Ensure repository root is on sys.path so `src` can be imported as a package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -23,9 +25,19 @@ class Transaction(BaseModel):
     oldbalanceDest: float = 0.0
     newbalanceDest: float = 0.0
 
+class SessionContext(BaseModel):
+    session_id: str = "0"
+    ja3_hash: str = ""
+    ip_address: str = "0.0.0.0"
+    asn: int = 0
+    flow_duration: float = 0
+    flow_bytes_per_sec: float = 0
+    packet_rate: float = 0
+
 class APIInuput(BaseModel):
     transaction: Transaction
     domain: str = None
+    session_context: SessionContext
 
 pipeline = create_pipeline()
 
